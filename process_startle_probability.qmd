@@ -78,7 +78,7 @@ cumuldata <-
   group_by(trial, rep) |> 
   mutate(totalstartle = cumsum(nstartle))
 
-cumuldata
+head(cumuldata)
 ```
 
 ```{r}
