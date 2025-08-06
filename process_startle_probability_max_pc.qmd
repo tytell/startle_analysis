@@ -1,0 +1,149 @@
+---
+title: "Process startle probability"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(here)
+```
+
+Extra processing scripts
+```{r}
+source(here('R', 'read_pps_file.R'))
+```
+
+Location of the data.
+```{r}
+# data downloaded into the current working directory
+datadir <- here('data', 'raw_data')
+
+# could be
+# datadir <- "Z:\Hypercapnia\Hypercapnia\2025-07-02"
+# on the Windows machine, but then don't use here
+```
+
+Find all the .pps files.
+```{r}
+ppsfiles <- list.files(datadir, pattern = '.*\\.pps',
+                       full.names = TRUE, recursive = TRUE)
+
+if (length(ppsfiles) == 0) {
+  cli::cli_alert_danger("Didn't find any .pps files in {datadir}!")
+} else {
+  cli::cli_alert_success("Found {length(ppsfiles)} data files!")
+}
+```
+
+```{r}
+data <- map(ppsfiles, read_pps_file) |> 
+  bind_rows()
+```
+
+```{r}
+data
+```
+
+Process the filename to get the trial and rep number.
+```{r}
+trialrep = str_match(data$cinefile, 'Trial(?<trial>\\d+)-(?<rep>\\d+)')
+data <- data |> 
+  mutate(trial = trialrep[,2],
+         rep = trialrep[,3])
+```
+
+```{r}
+head(data)
+```
+
+This takes the X and Y coordinates and pivots the dataset into "long" format,
+where the X and Y number is stored under "indiv", and all the X and Y coordinates
+are under just one X and Y column.
+```{r}
+datalong <-
+  data |> pivot_longer(cols = c(starts_with('X'), starts_with('Y')),
+                     names_pattern = '(.)(.)\\.mm',
+                     names_to = c('.value', 'indiv')) |> 
+  filter(!is.na(X))
+
+head(datalong)
+```
+
+```{r}
+cumuldata <-
+  datalong |> 
+  group_by(trial, rep, frame) |> 
+  summarize(nstartle = n(),
+            timefromtrig.s = first(timefromtrig.s),
+            timefromtap = timefromtrig.s - 0.08,
+            abstime = first(abstime)) |> 
+  group_by(trial, rep) |> 
+  mutate(totalstartle = cumsum(nstartle)) |>
+  group_by(trial) |> #get relative time, abstime not comparable b/w trials
+  mutate(relative_time = abstime - first(abstime))
+
+##ADD IN GROUP/TANK INFO -- will use better file names in the future to 
+##caputure this appropriately
+## YYYY-MM-DD_GROUP_CONDITION
+cumuldata <- cumuldata %>%
+  mutate(group = case_when(
+    trial == "07"  ~ "a",
+    trial == "09"  ~ "b",
+    trial == "10" ~ "c",
+    trial == "11" ~ "a"
+  ))
+
+
+head(cumuldata)
+```
+
+```{r}
+cumuldata |> 
+  ggplot(aes(x = timefromtap, y = totalstartle, color = rep)) +
+  geom_step() +
+  facet_wrap(~ rep)
+```
+
+
+Filter the table to get times before the 60 ms mark
+
+```{r}
+#0.08 seconds is when the tapper hits the glass
+df_60 <- cumuldata %>% filter(timefromtrig.s < (0.08 + 0.06))
+df_30 <- cumuldata %>% filter(timefromtrig.s < (0.08 + 0.03))
+
+
+
+#get summary of percetage of fish that startle before a given time
+df_percentages <- cumuldata %>% group_by(trial, rep) %>% 
+  summarize(
+    abstime = first(abstime),
+    relative_time = first(relative_time),
+    percent_before_60ms = sum(timefromtap < (0.06)) / 5 * 100,
+    percent_before_30ms = sum(timefromtap < (0.03)) / 5 * 100
+  ) %>%
+  pivot_longer(
+    cols = starts_with("percent_before_"),
+    names_to = "cutoff_ms",
+    values_to = "percent_startled"
+  ) %>%
+  mutate(
+    cutoff_ms = as.numeric(gsub("percent_before_|ms", "", cutoff_ms))
+  )
+
+head(df_percentages)
+
+
+```
+
+
+```{r}
+df_percentages %>%
+  filter(cutoff_ms == 30) %>% 
+  ggplot(aes(x = relative_time, y = percent_startled, color = trial)) +
+  geom_point(aes(shape = as.factor(cutoff_ms))) + geom_smooth(method = "lm", se = FALSE)
+
+#print out stats
+summary(lm(percent_startled ~ relative_time , data = df_percentages))
+```
+
